@@ -36,7 +36,7 @@ jobs:
           du -sh target.apk
 
       # ==========================================
-      # 方案 A：使用 Apktool 转换为 Smali (非常稳定，不易崩溃)
+      # 方案 A：使用 Apktool 转换为 Smali (非常稳定)
       # ==========================================
       - name: Install Apktool
         run: |
@@ -55,13 +55,17 @@ jobs:
           apktool d target.apk -o decompiled_smali
 
       # ==========================================
-      # 方案 B：使用 JADX 转换为 Java 源码 (可选，因内存限制可能失败)
+      # 方案 B：使用 JADX 转换为 Java 源码 (可选，由于内存限制有可能崩溃)
       # ==========================================
       - name: Install JADX
         run: |
           JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
           curl -L "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o jadx.zip
           unzip -d bin/jadx jadx.zip
+          
+          # ====== 核心修复：递归赋予 JADX 目录下所有的脚本可执行权限 ======
+          chmod -R +x bin/jadx/bin
+          
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       - name: Decompile with JADX (DEX to Java)
