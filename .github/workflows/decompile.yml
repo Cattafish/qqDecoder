@@ -44,7 +44,7 @@ jobs:
           du -sh target.apk
 
       # ==========================================
-      # 3. 使用 Apktool 转换为 Smali (非常稳定，保留所有类和资源)
+      # 3. 使用 Apktool 转换为 Smali (非常稳定，保留所有类和资源文件)
       # ==========================================
       - name: Install Apktool
         run: |
@@ -68,7 +68,44 @@ jobs:
           apktool d target.apk -o decompiled_smali
 
       # ==========================================
-      # 4. 使用 JADX 转换为 Java 源码 (精准反编译核心包)
+      # 4. 安装 dex2jar 并物理裁剪包结构 (核心绕过步骤)
+      # ==========================================
+      - name: Install dex2jar
+        run: |
+          curl -L "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip" -o dex-tools.zip
+          unzip dex-tools.zip
+          chmod +x dex-tools-v2.4/*.sh
+          echo "$GITHUB_WORKSPACE/dex-tools-v2.4" >> $GITHUB_PATH
+
+      - name: Convert APK to JAR and Crop Package
+        run: |
+          cd workspace
+          echo "Converting APK to JAR..."
+          d2j-dex2jar.sh -f target.apk -o full_classes.jar
+          
+          echo "Unzipping JAR for physical cropping..."
+          mkdir -p jar_extracted
+          unzip -q full_classes.jar -d jar_extracted
+          
+          echo "Cropping packages: removing everything except 'com/tencent/mobileqq'..."
+          cd jar_extracted
+          # 第一层：保留 com 目录，删除其他（如 android, androidx, kotlin, okhttp 等）
+          find . -mindepth 1 -maxdepth 1 ! -name 'com' -exec rm -rf {} +
+          # 第二层：保留 tencent 目录，删除其他
+          cd com
+          find . -mindepth 1 -maxdepth 1 ! -name 'tencent' -exec rm -rf {} +
+          # 第三层：保留 mobileqq 目录，删除其他
+          cd tencent
+          find . -mindepth 1 -maxdepth 1 ! -name 'mobileqq' -exec rm -rf {} +
+          cd ../..
+          
+          echo "Zipping the cropped directory back to a filtered JAR..."
+          zip -q -r ../filtered.jar .
+          cd ..
+          echo "Secondary crop completed."
+
+      # ==========================================
+      # 5. 安装 JADX 并反编译裁剪后的精简 JAR 包 (安全高效)
       # ==========================================
       - name: Install JADX
         run: |
@@ -81,18 +118,17 @@ jobs:
           
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
-      - name: Decompile with JADX (DEX to Java - ONLY com.tencent.mobileqq)
-        # 为防止虚拟机内存被爆导致系统强杀，堆内存降至 5.5GB
-        # 加入 --include-pkgs "com.tencent.mobileqq" 仅反编译 QQ 核心包
+      - name: Decompile with JADX (Filtered JAR to Java)
+        # 此时 JADX 面对的是一个极度精简的 filtered.jar，5.5G 堆内存能以极快的速度安全跑完
         env:
           JAVA_OPTS: "-Xmx5500m"
         run: |
           cd workspace
-          echo "Decompiling only 'com.tencent.mobileqq' package using JADX..."
-          jadx -d decompiled_java --no-res --threads-count 1 --include-pkgs "com.tencent.mobileqq" target.apk || echo "JADX encountered warning/errors, continuing..."
+          echo "Decompiling cropped JAR to Java..."
+          jadx -d decompiled_java --no-res --threads-count 1 filtered.jar || echo "JADX encountered warning/errors, continuing..."
 
       # ==========================================
-      # 5. 打包与上传产物
+      # 6. 打包与上传产物
       # ==========================================
       - name: Zip Decompiled Files
         run: |
