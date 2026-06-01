@@ -68,12 +68,16 @@ jobs:
           apktool d target.apk -o decompiled_smali
 
       # ==========================================
-      # 4. 安装 dex2jar 并物理裁剪包结构 (核心绕过步骤)
+      # 4. 安装 dex2jar 并物理裁剪包结构 (解除硬编码内存限制)
       # ==========================================
       - name: Install dex2jar
         run: |
           curl -L "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip" -o dex-tools.zip
           unzip dex-tools.zip
+          
+          # ====== 核心修复：通过 sed 替换脚本中硬编码的低内存设置 (Xmx1024m/2048m -> Xmx5g) ======
+          sed -i 's/-Xmx[0-9]*[mg]/-Xmx5g/g' dex-tools-v2.4/d2j_invoke.sh
+          
           chmod +x dex-tools-v2.4/*.sh
           echo "$GITHUB_WORKSPACE/dex-tools-v2.4" >> $GITHUB_PATH
 
