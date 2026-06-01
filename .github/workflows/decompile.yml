@@ -44,7 +44,7 @@ jobs:
           du -sh target.apk
 
       # ==========================================
-      # 3. 使用 Apktool 转换为 Smali (非常稳定)
+      # 3. 使用 Apktool 转换为 Smali (非常稳定，保留所有类和资源)
       # ==========================================
       - name: Install Apktool
         run: |
@@ -56,7 +56,7 @@ jobs:
           APKTOOL_VERSION=$(curl -s https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
           echo "Installing Apktool version: $APKTOOL_VERSION"
           
-          # 修正链接，并使用 -f 参数。如果失败则立刻报错
+          # 修正链接，并使用 -f 参数
           curl -f -L "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o bin/apktool.jar
           
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
@@ -68,7 +68,7 @@ jobs:
           apktool d target.apk -o decompiled_smali
 
       # ==========================================
-      # 4. 使用 JADX 转换为 Java 源码
+      # 4. 使用 JADX 转换为 Java 源码 (精准反编译核心包)
       # ==========================================
       - name: Install JADX
         run: |
@@ -81,14 +81,15 @@ jobs:
           
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
-      - name: Decompile with JADX (DEX to Java)
-        # 为防止 7GB 内存爆满，限制 JADX 为单线程，设置 JVM 堆大小为 6GB，不解码资源
+      - name: Decompile with JADX (DEX to Java - ONLY com.tencent.mobileqq)
+        # 为防止虚拟机内存被爆导致系统强杀，堆内存降至 5.5GB
+        # 加入 --include-pkgs "com.tencent.mobileqq" 仅反编译 QQ 核心包
         env:
-          JAVA_OPTS: "-Xmx6g"
+          JAVA_OPTS: "-Xmx5500m"
         run: |
           cd workspace
-          echo "Decompiling DEX to Java using JADX..."
-          jadx -d decompiled_java --no-res --threads-count 1 target.apk || echo "JADX encountered warning/errors, continuing..."
+          echo "Decompiling only 'com.tencent.mobileqq' package using JADX..."
+          jadx -d decompiled_java --no-res --threads-count 1 --include-pkgs "com.tencent.mobileqq" target.apk || echo "JADX encountered warning/errors, continuing..."
 
       # ==========================================
       # 5. 打包与上传产物
