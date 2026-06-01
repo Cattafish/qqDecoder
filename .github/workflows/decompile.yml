@@ -1,0 +1,98 @@
+name: Auto Decompile QQ APK
+
+on:
+  workflow_dispatch: # 支持手动点击按钮触发
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Free Disk Space (Cleanup)
+        # 释放磁盘空间，防止大文件解压时空间不足
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Download APK from Custom Link
+        # 注意：此处链接必须用双引号包裹，防止其中的 & 符号被识别为后台运行命令
+        run: |
+          mkdir -p workspace
+          cd workspace
+          echo "Downloading APK..."
+          curl -L "https://ucdl.25pp.com/fs08/2026/02/11/1/110_0ffbab8fbe0ed5f478f1024c8e798d6f.apk?yingid=web_space&packageid=206589547&did=9404fd6e4f26282890285d780583e4c8" -o target.apk
+          echo "Download finished. File info:"
+          du -sh target.apk
+
+      # ==========================================
+      # 方案 A：使用 Apktool 转换为 Smali (非常稳定，不易崩溃)
+      # ==========================================
+      - name: Install Apktool
+        run: |
+          mkdir -p bin
+          curl -L "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" -o bin/apktool
+          chmod +x bin/apktool
+          # 自动获取最新 apktool.jar 的版本并下载
+          APKTOOL_VERSION=$(curl -s https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -L "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o bin/apktool.jar
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+
+      - name: Decompile with Apktool (Smali & Resources)
+        run: |
+          cd workspace
+          echo "Decompiling resources and dex to smali..."
+          apktool d target.apk -o decompiled_smali
+
+      # ==========================================
+      # 方案 B：使用 JADX 转换为 Java 源码 (可选，因内存限制可能失败)
+      # ==========================================
+      - name: Install JADX
+        run: |
+          JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -L "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o jadx.zip
+          unzip -d bin/jadx jadx.zip
+          echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
+
+      - name: Decompile with JADX (DEX to Java)
+        # 为防止 7GB 内存爆满，限制 JADX 为单线程，设置 JVM 堆大小为 6GB，不解码资源
+        env:
+          JAVA_OPTS: "-Xmx6g"
+        run: |
+          cd workspace
+          echo "Decompiling DEX to Java using JADX..."
+          jadx -d decompiled_java --no-res --threads-count 1 target.apk || echo "JADX encountered warning/errors, continuing..."
+
+      # ==========================================
+      # 打包与上传产物
+      # ==========================================
+      - name: Zip Decompiled Files
+        run: |
+          cd workspace
+          if [ -d "decompiled_smali" ]; then
+            echo "Zipping Smali output..."
+            zip -r smali_output.zip decompiled_smali
+          fi
+          if [ -d "decompiled_java" ]; then
+            echo "Zipping Java output..."
+            zip -r java_output.zip decompiled_java
+          fi
+
+      - name: Upload Decoupled Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qq-decompiled-results
+          path: |
+            workspace/smali_output.zip
+            workspace/java_output.zip
+          retention-days: 7 # 产物在 GitHub 保留 7 天
