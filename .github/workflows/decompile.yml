@@ -39,7 +39,7 @@ jobs:
           mkdir -p workspace
           cd workspace
           echo "Downloading APK..."
-          curl -L "https://ucdl.25pp.com/fs08/2026/02/11/1/110_0ffbab8fbe0ed5f478f1024c8e798d6f.apk?yingid=web_space&packageid=206589547&did=9404fd6e4f26282890285d780583e4c8" -o target.apk
+          curl -L "https://downv6.qq.com/qqweb/QQ_1/android_apk/9.3.10_3b553a3ebc174e67.apk" -o target.apk
           echo "Download finished. File info:"
           du -sh target.apk
 
