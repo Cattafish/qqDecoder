@@ -3,13 +3,18 @@ name: Auto Decompile QQ APK
 on:
   workflow_dispatch: # 支持手动点击按钮触发，并提供可选项
     inputs:
+      decompile_all:
+        description: '是否完整反编译整个 APK (注意：产物文件极大，耗时较长)'
+        required: true
+        type: boolean
+        default: false
       decompile_mobileqq:
-        description: '是否反编译 com.tencent.mobileqq (传统核心)'
+        description: '是否反编译 com.tencent.mobileqq (非完整反编译时生效)'
         required: true
         type: boolean
         default: true
       decompile_qqnt:
-        description: '是否反编译 com.tencent.qqnt (NT 新架构核心)'
+        description: '是否反编译 com.tencent.qqnt (非完整反编译时生效)'
         required: true
         type: boolean
         default: true
@@ -33,7 +38,25 @@ jobs:
           df -h
 
       # ==========================================
-      # 2. 基础环境准备
+      # 2. 开启 8GB Swap 虚拟内存（防止 JADX 的 JVM 内存溢出）
+      # ==========================================
+      - name: Create 8GB Swap Space
+        run: |
+          echo "=== 开启 Swap 前内存状态 ==="
+          free -h
+          
+          # 创建并挂载 8GB Swap
+          sudo swapoff -a
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          
+          echo "=== 开启 Swap 后内存状态 ==="
+          free -h
+
+      # ==========================================
+      # 3. 基础环境准备
       # ==========================================
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -54,11 +77,10 @@ jobs:
           du -sh target.apk
 
       # ==========================================
-      # 3. 安装 JADX 工具
+      # 4. 安装 JADX 工具
       # ==========================================
       - name: Install JADX
         run: |
-          # 显式创建 bin 目录，避免解压时报错
           mkdir -p bin
           
           JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -71,63 +93,39 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 4. 单 DEX 轮询反编译并实时合并目录 (核心安全步骤)
+      # 5. 全局载入反编译 (无损合并与解析)
       # ==========================================
-      - name: Extract DEX files and Decompile One-by-One
+      - name: Decompile APK
         run: |
           cd workspace
-          echo "Unzipping DEX files from APK..."
-          unzip -q target.apk "classes*.dex" -d dex_extracted
-          
-          # 创建用于存放合并后 Java 代码的最终目录
           mkdir -p java_final
           
-          if [ "${{ inputs.decompile_mobileqq }}" = "true" ]; then
-            echo "Will extract com.tencent.mobileqq"
-            mkdir -p java_final/com/tencent/mobileqq
+          # 检查并组装过滤参数
+          FILTER=""
+          if [ "${{ inputs.decompile_all }}" = "false" ]; then
+            if [ "${{ inputs.decompile_mobileqq }}" = "true" ] && [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
+              FILTER="com.tencent.mobileqq,com.tencent.qqnt"
+            elif [ "${{ inputs.decompile_mobileqq }}" = "true" ]; then
+              FILTER="com.tencent.mobileqq"
+            elif [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
+              FILTER="com.tencent.qqnt"
+            else
+              echo "Error: No packages selected for decompilation!"
+              exit 1
+            fi
           fi
           
-          if [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
-            echo "Will extract com.tencent.qqnt"
-            mkdir -p java_final/com/tencent/qqnt
+          # 执行反编译
+          if [ -n "$FILTER" ]; then
+            echo "局部反编译模式: 载入完整 APK 上下文，但仅输出: $FILTER"
+            jadx -d java_final --no-res --threads-count 2 --show-only "$FILTER" target.apk
+          else
+            echo "完整反编译模式: 正在反编译整个 APK..."
+            jadx -d java_final --no-res --threads-count 2 target.apk
           fi
-          
-          cd dex_extracted
-          # 循环处理每一个解压出的 DEX 文件
-          for f in classes*.dex; do
-            echo "========================================="
-            echo "Processing $f..."
-            
-            # 单个 DEX 反编译仅消耗极少内存（通常低于 1.5G），能够保障绝对不触发内存溢出
-            jadx -d temp_out --no-res --threads-count 2 "$f" || echo "JADX returned warnings on $f, continuing..."
-            
-            # 如果勾选了 mobileqq，且存在对应目录，则进行合并
-            if [ "${{ inputs.decompile_mobileqq }}" = "true" ]; then
-              if [ -d "temp_out/sources/com/tencent/mobileqq" ]; then
-                echo "Found com.tencent.mobileqq in $f. Merging..."
-                cp -r temp_out/sources/com/tencent/mobileqq/. ../java_final/com/tencent/mobileqq/
-              fi
-            fi
-            
-            # 如果勾选了 qqnt，且存在对应目录，则进行合并
-            if [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
-              if [ -d "temp_out/sources/com/tencent/qqnt" ]; then
-                echo "Found com.tencent.qqnt in $f. Merging..."
-                cp -r temp_out/sources/com/tencent/qqnt/. ../java_final/com/tencent/qqnt/
-              fi
-            fi
-            
-            # 及时删除临时反编译目录，保证服务器磁盘不会被撑满
-            rm -rf temp_out
-          done
-          
-          cd ..
-          # 清理临时解出的原 dex 目录
-          rm -rf dex_extracted
-          echo "All selected DEX files processed and merged successfully."
 
       # ==========================================
-      # 5. 打包与上传产物 (仅打包 Java 源码)
+      # 6. 打包与上传产物 (仅打包 Java 源码)
       # ==========================================
       - name: Zip Decompiled Files
         run: |
