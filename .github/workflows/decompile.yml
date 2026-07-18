@@ -45,7 +45,7 @@ jobs:
           echo "=== 开启 Swap 前内存状态 ==="
           free -h
           
-          # 创建并挂载 8GB Swap
+          # 创建并挂载 8GB Swap，为大规模全局分析保驾护航
           sudo swapoff -a
           sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
@@ -93,14 +93,18 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 5. 全局载入反编译 (无损合并与解析)
+      # 5. 提取所有 DEX 文件并全局反编译 (避开加密 Assets 且保障跨 DEX 引用无损)
       # ==========================================
       - name: Decompile APK
         run: |
           cd workspace
           mkdir -p java_final
           
-          # 检查并组装过滤参数
+          # 5.1 仅仅提取所有的 classes*.dex 文件到临时目录，彻底跳过 assets
+          echo "Only extracting classes*.dex files from target.apk..."
+          unzip -q target.apk "classes*.dex" -d dex_extracted
+          
+          # 5.2 检查并组装过滤参数
           FILTER=""
           if [ "${{ inputs.decompile_all }}" = "false" ]; then
             if [ "${{ inputs.decompile_mobileqq }}" = "true" ] && [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
@@ -115,14 +119,21 @@ jobs:
             fi
           fi
           
-          # 执行反编译
+          # 5.3 显式允许 JVM 使用 12GB 的堆内存，让 Java 充分调度我们配置的 Swap 虚拟空间
+          export JAVA_OPTS="-Xmx12g"
+          echo "JVM memory limit set to 12G"
+          
+          # 5.4 一起传入所有提取出的 dex 路径进行全局反编译
           if [ -n "$FILTER" ]; then
-            echo "局部反编译模式: 载入完整 APK 上下文，但仅输出: $FILTER"
-            jadx -d java_final --no-res --threads-count 2 --show-only "$FILTER" target.apk
+            echo "局部反编译模式: 载入完整 DEX 上下文，但仅输出: $FILTER"
+            jadx -d java_final --no-res --threads-count 2 --show-only "$FILTER" dex_extracted/*.dex
           else
-            echo "完整反编译模式: 正在反编译整个 APK..."
-            jadx -d java_final --no-res --threads-count 2 target.apk
+            echo "完整反编译模式: 正在反编译整个 APK... (预计耗时 1~3 小时，请耐心等待)"
+            jadx -d java_final --no-res --threads-count 2 dex_extracted/*.dex
           fi
+          
+          # 5.5 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
+          rm -rf dex_extracted
 
       # ==========================================
       # 6. 打包与上传产物 (仅打包 Java 源码)
