@@ -38,16 +38,16 @@ jobs:
           df -h
 
       # ==========================================
-      # 2. 开启 8GB Swap 虚拟内存（防止 JADX 的 JVM 内存溢出）
+      # 2. 【升级】开启 16GB Swap 虚拟内存（保障 23GB 总内存空间）
       # ==========================================
-      - name: Create 8GB Swap Space
+      - name: Create 16GB Swap Space
         run: |
           echo "=== 开启 Swap 前内存状态 ==="
           free -h
           
-          # 创建并挂载 8GB Swap，为大规模全局分析保驾护航
+          # 创建并挂载 16GB Swap
           sudo swapoff -a
-          sudo fallocate -l 8G /swapfile
+          sudo fallocate -l 16G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -93,7 +93,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 5. 提取所有 DEX 文件并全局反编译 (避开加密 Assets 且保障跨 DEX 引用无损)
+      # 5. 【升级】单线程 + 18G JVM + 忽略调试信息全局反编译
       # ==========================================
       - name: Decompile APK
         run: |
@@ -119,20 +119,22 @@ jobs:
             fi
           fi
           
-          # 5.3 显式允许 JVM 使用 12GB 的堆内存，让 Java 充分调度我们配置的 Swap 虚拟空间
-          export JAVA_OPTS="-Xmx12g"
-          echo "JVM memory limit set to 12G"
+          # 【优化】显式允许 JVM 使用高达 18GB 的堆内存
+          export JAVA_OPTS="-Xmx18g"
+          echo "JVM memory limit set to 18G"
           
-          # 5.4 一起传入所有提取出的 dex 路径进行全局反编译
+          # 5.3 运行全局反编译
+          # 【优化】--threads-count 1 极大地平摊了瞬时内存占用，避免并发 OOM
+          # 【优化】--no-debug-info 忽略类解析时的无用调试信息，进一步节约内存
           if [ -n "$FILTER" ]; then
             echo "局部反编译模式: 载入完整 DEX 上下文，但仅输出: $FILTER"
-            jadx -d java_final --no-res --threads-count 2 --show-only "$FILTER" dex_extracted/*.dex
+            jadx -d java_final --no-res --threads-count 1 --no-debug-info --show-only "$FILTER" dex_extracted/*.dex
           else
-            echo "完整反编译模式: 正在反编译整个 APK... (预计耗时 1~3 小时，请耐心等待)"
-            jadx -d java_final --no-res --threads-count 2 dex_extracted/*.dex
+            echo "完整反编译模式: 正在反编译整个 APK..."
+            jadx -d java_final --no-res --threads-count 1 --no-debug-info dex_extracted/*.dex
           fi
           
-          # 5.5 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
+          # 5.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
           rm -rf dex_extracted
 
       # ==========================================
