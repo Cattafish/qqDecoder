@@ -38,16 +38,16 @@ jobs:
           df -h
 
       # ==========================================
-      # 2. 【升级】开启 16GB Swap 虚拟内存（保障 23GB 总内存空间）
+      # 2. 【升级】开启 18GB Swap 虚拟内存（保障 25GB 总内存空间）
       # ==========================================
-      - name: Create 16GB Swap Space
+      - name: Create 18GB Swap Space
         run: |
           echo "=== 开启 Swap 前内存状态 ==="
           free -h
           
-          # 创建并挂载 16GB Swap
+          # 创建并挂载 18GB Swap
           sudo swapoff -a
-          sudo fallocate -l 16G /swapfile
+          sudo fallocate -l 18G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -119,9 +119,9 @@ jobs:
             fi
           fi
           
-          # 【优化】显式允许 JVM 使用高达 18GB 的堆内存
-          export JAVA_OPTS="-Xmx18g"
-          echo "JVM memory limit set to 18G"
+          # 【优化】显式允许 JVM 使用高达 20GB 的堆内存
+          export JAVA_OPTS="-Xmx20g"
+          echo "JVM memory limit set to 20G"
           
           # 5.3 运行全局反编译
           # 【优化】--threads-count 1 极大地平摊了瞬时内存占用，避免并发 OOM
@@ -131,7 +131,8 @@ jobs:
             jadx -d java_final --no-res --threads-count 1 --no-debug-info --show-only "$FILTER" dex_extracted/*.dex
           else
             echo "完整反编译模式: 正在反编译整个 APK..."
-            jadx -d java_final --no-res --threads-count 1 --no-debug-info dex_extracted/*.dex
+            # 先开 2 看看崩不崩
+            jadx -d java_final --no-res --threads-count 2 --no-debug-info dex_extracted/*.dex
           fi
           
           # 5.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
