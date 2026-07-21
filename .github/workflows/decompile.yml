@@ -123,17 +123,36 @@ jobs:
           export JAVA_OPTS="-Xmx20g"
           echo "JVM memory limit set to 20G"
           
-          # 5.3 运行全局反编译
-          # 【优化】--threads-count 1 极大地平摊了瞬时内存占用，避免并发 OOM
-          # 【优化】--no-debug-info 忽略类解析时的无用调试信息，进一步节约内存
+          # ==========================================
+          # 5.3 运行全局反编译（带状态码兼容逻辑）
+          # ==========================================
+          # 临时关闭 exit-on-error 保护，防止非 0 状态码直接导致 shell 崩溃
+          set +e
+          
           if [ -n "$FILTER" ]; then
             echo "局部反编译模式: 载入完整 DEX 上下文，但仅输出: $FILTER"
             jadx -d java_final --no-res --threads-count 1 --no-debug-info --show-only "$FILTER" dex_extracted/*.dex
           else
             echo "完整反编译模式: 正在反编译整个 APK..."
-            # 先开 2 看看崩不崩
             jadx -d java_final --no-res --threads-count 2 --no-debug-info dex_extracted/*.dex
           fi
+          
+          # 捕获 JADX 执行结束后的真实退出状态码
+          EXIT_CODE=$?
+          
+          # 恢复 exit-on-error 保护
+          set -e
+          
+          # 判断退出状态码：
+          # 0 代表完全无错成功
+          # 3 代表完成反编译，但部分类有报错。由于我们只需要大部分源码，所以 3 应当视为成功。
+          if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 3 ]; then
+            echo "JADX 运行结束，状态码：$EXIT_CODE (允许的正常状态)。继续进行后续打包..."
+          else
+            echo "JADX 发生致命错误，状态码：$EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+          # ==========================================
           
           # 5.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
           rm -rf dex_extracted
