@@ -174,9 +174,11 @@ jobs:
           echo "Only extracting classes*.dex files from target.apk..."
           unzip -q target.apk "classes*.dex" -d dex_extracted
           
-          # 8.2 检查并组装过滤参数（定时任务模式下默认过滤 mobileqq 和 qqnt）
+          # 8.2 检查并组装过滤参数（修改后：定时任务将默认进行全量反编译）
           FILTER=""
-          if [ "${{ inputs.decompile_all }}" = "false" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          # 只有在手动触发（workflow_dispatch）且您勾选了【非完整反编译】时，才启用过滤器。
+          # 每天的自动构建（schedule）由于不满足此条件，将不会设置 FILTER，从而默认执行全量反编译。
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.decompile_all }}" = "false" ]; then
             if [ "${{ inputs.decompile_mobileqq }}" = "true" ] && [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
               FILTER="com.tencent.mobileqq,com.tencent.qqnt"
             elif [ "${{ inputs.decompile_mobileqq }}" = "true" ]; then
@@ -199,6 +201,7 @@ jobs:
             jadx -d java_final --no-res --threads-count 1 --no-debug-info --show-only "$FILTER" dex_extracted/*.dex
           else
             echo "完整反编译模式: 正在反编译整个 APK..."
+            # 全量反编译时，开启 2 线程加快速度，但内存占用较高
             jadx -d java_final --no-res --threads-count 2 --no-debug-info dex_extracted/*.dex
           fi
           
@@ -207,7 +210,7 @@ jobs:
           
           # 判断退出状态码：0 和 3 均视为允许的状态并继续执行
           if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 3 ]; then
-            echo "JADX 运行结束，状态码为 $EXIT_CODE (允许的无错或部分有错状态)。"
+            echo "JADX 运行结束，状态码为 $EXIT_CODE"
           else
             echo "JADX 发生致命错误，错误码为 $EXIT_CODE"
             exit $EXIT_CODE
