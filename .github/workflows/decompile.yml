@@ -315,7 +315,7 @@ jobs:
           
           # 移除末尾非法的 --clobber 参数；如果 Tag 已存在则自动降级使用 upload --clobber 覆盖文件
           gh release create "v${VERSION_SHORT}" workspace/java_output.zip \
-            --title "QQ Android v${VERSION_SHORT} 自动反编译源码" \
+            --title "QQ Android v${VERSION_SHORT}" \
             --notes "### QQ Android 自动反编译产物说明
 
           - **应用版本：** \`${VERSION_SHORT}\`
