@@ -92,21 +92,46 @@ jobs:
           git push
 
       # ==========================================
-      # 4. 优先清理磁盘空间（仅在需要更新时执行）
+      # 4. 【自适应逻辑】优先清理磁盘空间并检测最优存储路径
       # ==========================================
-      - name: Free Disk Space (Cleanup)
+      - name: Free Disk Space (Cleanup) & Detect Best Drive
         if: steps.check_update.outputs.has_update == 'true'
         run: |
-          echo "Before cleanup disk space:"
+          echo "=== 磁盘清理前状态 ==="
           df -h
+          
+          # 清理常用无用大目录（释放根磁盘空间）
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
-          echo "After cleanup disk space:"
+          
+          echo "=== 磁盘清理后状态 ==="
           df -h
+          
+          # --------------------------------------------------------
+          # 自适应存储探测：比较根目录 / 与 /mnt 临时盘的可用空间大小
+          # --------------------------------------------------------
+          MNT_AVAIL=$(df -k /mnt 2>/dev/null | tail -n 1 | awk '{print $4}')
+          ROOT_AVAIL=$(df -k / 2>/dev/null | tail -n 1 | awk '{print $4}')
+          
+          if [ -z "$MNT_AVAIL" ]; then
+            MNT_AVAIL=0
+          fi
+          
+          echo "Root (/) available space: $((ROOT_AVAIL / 1024 / 1024)) GB"
+          echo "/mnt available space: $((MNT_AVAIL / 1024 / 1024)) GB"
+          
+          # 如果 /mnt 存在且空间大于主根目录，则设置 TARGET_DIR 为 /mnt
+          if [ "$MNT_AVAIL" -gt "$ROOT_AVAIL" ]; then
+            echo "TARGET_DIR=/mnt" >> $GITHUB_ENV
+            echo "自适应检测结果：使用 /mnt 作为主缓存与交换区。"
+          else
+            echo "TARGET_DIR=" >> $GITHUB_ENV
+            echo "自适应检测结果：使用主根目录 (/) 作为主缓存与交换区。"
+          fi
 
       # ==========================================
-      # 5. 【升级】开启 32GB Swap 虚拟内存（仅在需要更新时执行，保障 47GB 总虚拟内存）
+      # 5. 【自适应】开启 32GB Swap 虚拟内存（保障 47GB 总虚拟内存）
       # ==========================================
       - name: Create 32GB Swap Space
         if: steps.check_update.outputs.has_update == 'true'
@@ -114,12 +139,20 @@ jobs:
           echo "=== 开启 Swap 前内存状态 ==="
           free -h
           
-          # 创建并挂载 32GB Swap
-          sudo swapoff -a
-          sudo fallocate -l 32G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 根据自适应检测结果，确立 Swap 写入路径（防止挤爆分立盘机型的主根目录）
+          if [ "${{ env.TARGET_DIR }}" = "/mnt" ]; then
+            SWAP_PATH="/mnt/swapfile"
+          else
+            SWAP_PATH="/swapfile"
+          fi
+          
+          echo "Selected Swap path: $SWAP_PATH"
+          
+          sudo swapoff -a || true
+          sudo fallocate -l 32G $SWAP_PATH
+          sudo chmod 600 $SWAP_PATH
+          sudo mkswap $SWAP_PATH
+          sudo swapon $SWAP_PATH
           
           echo "=== 开启 Swap 后内存状态 ==="
           free -h
@@ -134,10 +167,28 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # ==========================================
+      # 7. 【自适应】建立并关联工作空间软链接
+      # ==========================================
       - name: Download APK from Latest Link
         if: steps.check_update.outputs.has_update == 'true'
         run: |
-          mkdir -p workspace
+          # 依据最优盘检测结果，确立物理工作目录
+          if [ "${{ env.TARGET_DIR }}" = "/mnt" ]; then
+            REAL_WORKSPACE="/mnt/workspace"
+            echo "Relocating workspace to /mnt/workspace"
+            sudo mkdir -p $REAL_WORKSPACE
+            sudo chown -R runner:runner $REAL_WORKSPACE
+          else
+            REAL_WORKSPACE="$GITHUB_WORKSPACE/workspace_real"
+            echo "Using standard workspace path"
+            mkdir -p $REAL_WORKSPACE
+          fi
+          
+          # 建立软链接，使后续步骤 cd workspace 均可无缝重定向
+          rm -rf workspace || true
+          ln -sf $REAL_WORKSPACE workspace
+          
           cd workspace
           echo "Downloading APK from: ${{ steps.check_update.outputs.apk_url }}"
           curl -L "${{ steps.check_update.outputs.apk_url }}" -o target.apk
@@ -145,7 +196,7 @@ jobs:
           du -sh target.apk
 
       # ==========================================
-      # 7. 安装 JADX 工具（仅在需要更新时执行）
+      # 8. 安装 JADX 工具（仅在需要更新时执行）
       # ==========================================
       - name: Install JADX
         if: steps.check_update.outputs.has_update == 'true'
@@ -162,7 +213,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 8. 双线程 + 30G JVM + 忽略调试信息全局反编译（仅在需要更新时执行）
+      # 9. 双线程 + 30G JVM + 忽略调试信息全局反编译（仅在需要更新时执行）
       # ==========================================
       - name: Decompile APK
         if: steps.check_update.outputs.has_update == 'true'
@@ -170,11 +221,11 @@ jobs:
           cd workspace
           mkdir -p java_final
           
-          # 8.1 仅仅提取所有的 classes*.dex 文件到临时目录，彻底跳过 assets
+          # 9.1 仅仅提取所有的 classes*.dex 文件到临时目录，彻底跳过 assets
           echo "Only extracting classes*.dex files from target.apk..."
           unzip -q target.apk "classes*.dex" -d dex_extracted
           
-          # 8.2 检查并组装过滤参数（修改后：定时任务将默认进行全量反编译）
+          # 9.2 检查并组装过滤参数（修改后：定时任务将默认进行全量反编译）
           FILTER=""
           # 只有在手动触发（workflow_dispatch）且您勾选了【非完整反编译】时，才启用过滤器。
           # 每天的自动构建（schedule）由于不满足此条件，将不会设置 FILTER，从而默认执行全量反编译。
@@ -190,11 +241,11 @@ jobs:
             fi
           fi
           
-          # 【优化】结合 32G Swap，显式允许 JVM 使用高达 30GB 的堆内存，避免垃圾回收器在最后关头陷入疯狂 Full GC 循环
+          # 【优化】结合 32G Swap，允许 JVM 使用高达 30GB 的堆内存，避免在最后关头陷入疯狂 Full GC 循环
           export JAVA_OPTS="-Xmx30g"
           echo "JVM memory limit set to 30G"
           
-          # 8.3 运行全局反编译（已整合退出码 3 的忽略机制）
+          # 9.3 运行全局反编译（已整合退出码 3 的忽略机制）
           set +e
           if [ -n "$FILTER" ]; then
             echo "局部反编译模式: 载入完整 DEX 上下文，但仅输出: $FILTER"
@@ -216,11 +267,11 @@ jobs:
             exit $EXIT_CODE
           fi
           
-          # 8.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
+          # 9.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
           rm -rf dex_extracted
 
       # ==========================================
-      # 9. 打包反编译产物 (仅打包 Java 源码，且仅在需要更新时执行)
+      # 10. 打包反编译产物 (仅打包 Java 源码，且仅在需要更新时执行)
       # ==========================================
       - name: Zip Decompiled Files
         if: steps.check_update.outputs.has_update == 'true'
@@ -238,7 +289,7 @@ jobs:
           fi
 
       # ==========================================
-      # 10. 上传工作流 Artifact 备份（仅在需要更新时执行）
+      # 11. 上传工作流 Artifact 备份（仅在需要更新时执行）
       # ==========================================
       - name: Upload Decoupled Artifacts
         if: steps.check_update.outputs.has_update == 'true'
@@ -249,7 +300,7 @@ jobs:
           retention-days: 7
 
       # ==========================================
-      # 11. 自动创建 GitHub Release 并附带简短简介（仅在需要更新时执行）
+      # 12. 自动创建 GitHub Release 并附带简短简介（仅在需要更新时执行）
       # ==========================================
       - name: Create GitHub Release
         if: steps.check_update.outputs.has_update == 'true'
