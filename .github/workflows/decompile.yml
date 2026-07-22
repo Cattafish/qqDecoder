@@ -253,7 +253,7 @@ jobs:
           else
             echo "完整反编译模式: 正在反编译整个 APK..."
             # 全量反编译时，开启 2 线程加快速度，但内存占用较高
-            jadx -d java_final --no-res --threads-count 2 --no-debug-info dex_extracted/*.dex
+            jadx -d java_final --no-res --threads-count 2 dex_extracted/*.dex
           fi
           
           EXIT_CODE=$?
