@@ -106,17 +106,17 @@ jobs:
           df -h
 
       # ==========================================
-      # 5. 开启 18GB Swap 虚拟内存（仅在需要更新时执行）
+      # 5. 【升级】开启 32GB Swap 虚拟内存（仅在需要更新时执行，保障 47GB 总虚拟内存）
       # ==========================================
-      - name: Create 18GB Swap Space
+      - name: Create 32GB Swap Space
         if: steps.check_update.outputs.has_update == 'true'
         run: |
           echo "=== 开启 Swap 前内存状态 ==="
           free -h
           
-          # 创建并挂载 18GB Swap
+          # 创建并挂载 32GB Swap
           sudo swapoff -a
-          sudo fallocate -l 18G /swapfile
+          sudo fallocate -l 32G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -162,7 +162,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 8. 单线程 + 18G JVM + 忽略调试信息全局反编译（仅在需要更新时执行）
+      # 8. 双线程 + 30G JVM + 忽略调试信息全局反编译（仅在需要更新时执行）
       # ==========================================
       - name: Decompile APK
         if: steps.check_update.outputs.has_update == 'true'
@@ -190,9 +190,9 @@ jobs:
             fi
           fi
           
-          # 显式允许 JVM 使用高达 20GB 的堆内存
-          export JAVA_OPTS="-Xmx20g"
-          echo "JVM memory limit set to 20G"
+          # 【优化】结合 32G Swap，显式允许 JVM 使用高达 30GB 的堆内存，避免垃圾回收器在最后关头陷入疯狂 Full GC 循环
+          export JAVA_OPTS="-Xmx30g"
+          echo "JVM memory limit set to 30G"
           
           # 8.3 运行全局反编译（已整合退出码 3 的忽略机制）
           set +e
