@@ -35,21 +35,78 @@ jobs:
         uses: actions/checkout@v4
 
       # ==========================================
-      # 2. 自动检测 QQ 是否有新版本更新
+      # 2. 自动检测 QQ 是否有新版本更新（含 Beta & 版本号智能提取）
       # ==========================================
       - name: Check for QQ Update
         id: check_update
         run: |
-          echo "=== 正在从 Telegram 获取最新 QQ APK 直链 ==="
-          LATEST_URL=$(curl -sL https://t.me/s/qq_updatelog | grep -oE "https://downv6\.qq\.com/qqweb/QQ_1/android_apk/[a-zA-Z0-9_.-]+\.apk" | tail -n 1)
+          echo "=== 正在从 Telegram 获取最新 QQ APK 及版本信息 ==="
           
-          if [ -z "$LATEST_URL" ]; then
-            echo "错误: 无法从 Telegram 频道匹配到最新下载链接。"
-            exit 1
-          fi
-          
-          echo "Latest URL detected: $LATEST_URL"
+          # 使用 Python 脚本精准抓取 TG 最新消息块，解析链接、版本号及 Beta 标记
+          python3 - << 'EOF'
+          import urllib.request
+          import re
+          import os
 
+          url = "https://t.me/s/qq_updatelog"
+          req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+          
+          try:
+              html = urllib.request.urlopen(req).read().decode('utf-8')
+          except Exception as e:
+              print(f"Error fetching TG channel: {e}")
+              exit(1)
+
+          # 按 TG 消息块切割
+          messages = html.split('class="tgme_widget_message_wrap')
+          
+          latest_apk_url = None
+          latest_msg_text = ""
+
+          # 从最新的消息倒序查找包含下载直链的消息
+          for msg in reversed(messages):
+              urls = re.findall(r'https://downv6\.qq\.com/qqweb/QQ_1/android_apk/[a-zA-Z0-9_.-]+\.apk', msg)
+              if urls:
+                  latest_apk_url = urls[-1]
+                  latest_msg_text = msg
+                  break
+
+          if not latest_apk_url:
+              print("错误: 未能在 Telegram 频道找到有效的 APK 下载链接。")
+              exit(1)
+
+          # 1. 检测是否包含 #beta 或 #Beta
+          is_beta = "true" if re.search(r'#beta', latest_msg_text, re.IGNORECASE) else "false"
+
+          # 2. 提取版本号（优先提取形如 QQ_NT 9.3.30.39270 或数字版本号，若无则使用哈希文件名）
+          ver_match = re.search(r'QQ(?:_NT)?\s+([0-9.]+)', latest_msg_text, re.IGNORECASE)
+          if not ver_match:
+              ver_match = re.search(r'\b([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)\b', latest_msg_text)
+
+          filename = latest_apk_url.split('/')[-1].replace('.apk', '')
+
+          if ver_match:
+              version_short = ver_match.group(1)
+          else:
+              # 降级方案：从文件名获取
+              version_short = filename.split('_')[0]
+
+          # 写入 Github Output 供后续 Step 读取
+          github_output = os.environ.get('GITHUB_OUTPUT')
+          with open(github_output, 'a', encoding='utf-8') as f:
+              f.write(f"apk_url={latest_apk_url}\n")
+              f.write(f"version_short={version_short}\n")
+              f.write(f"version_full={filename}\n")
+              f.write(f"is_beta={is_beta}\n")
+
+          print(f"检测成功!")
+          print(f"下载直链: {latest_apk_url}")
+          print(f"版本号: {version_short}")
+          print(f"是否为 Beta 版: {is_beta}")
+          EOF
+
+          LATEST_URL="${{ steps.check_update.outputs.apk_url }}"
+          
           # 读取本地记录的上一次版本链接
           OLD_URL=""
           if [ -f "latest_version.txt" ]; then
@@ -57,22 +114,9 @@ jobs:
           fi
           echo "Old URL recorded: $OLD_URL"
 
-          # 比较版本：
-          # 如果是手动触发 (workflow_dispatch)，则强制进行反编译
-          # 如果是定时触发 (schedule)，只有当检测到新版本时才执行反编译
+          # 比较版本是否有变化或为手动触发
           if [ "$LATEST_URL" != "$OLD_URL" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "has_update=true" >> $GITHUB_OUTPUT
-            echo "apk_url=$LATEST_URL" >> $GITHUB_OUTPUT
-            
-            # 从链接中动态提取版本号 (例如从 9.3.25_a9d86b4594ac6bcb.apk 中提取)
-            FILENAME=$(basename "$LATEST_URL")
-            VERSION_FULL="${FILENAME%.apk}"
-            VERSION_SHORT=$(echo "$VERSION_FULL" | cut -d'_' -f1)
-            
-            echo "version_full=$VERSION_FULL" >> $GITHUB_OUTPUT
-            echo "version_short=$VERSION_SHORT" >> $GITHUB_OUTPUT
-            
-            # 更新本地的版本记录
             echo "$LATEST_URL" > latest_version.txt
           else
             echo "has_update=false" >> $GITHUB_OUTPUT
@@ -88,7 +132,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add latest_version.txt
-          git commit -m "Auto-update QQ APK version to newest [skip ci]" || echo "No changes to commit"
+          git commit -m "Auto-update QQ APK version record [skip ci]" || echo "No changes to commit"
           git push
 
       # ==========================================
@@ -100,7 +144,6 @@ jobs:
           echo "=== 磁盘清理前状态 ==="
           df -h
           
-          # 清理常用无用大目录（释放根磁盘空间）
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
@@ -108,9 +151,6 @@ jobs:
           echo "=== 磁盘清理后状态 ==="
           df -h
           
-          # --------------------------------------------------------
-          # 自适应存储探测：比较根目录 / 与 /mnt 临时盘的可用空间大小
-          # --------------------------------------------------------
           MNT_AVAIL=$(df -k /mnt 2>/dev/null | tail -n 1 | awk '{print $4}')
           ROOT_AVAIL=$(df -k / 2>/dev/null | tail -n 1 | awk '{print $4}')
           
@@ -118,10 +158,6 @@ jobs:
             MNT_AVAIL=0
           fi
           
-          echo "Root (/) available space: $((ROOT_AVAIL / 1024 / 1024)) GB"
-          echo "/mnt available space: $((MNT_AVAIL / 1024 / 1024)) GB"
-          
-          # 如果 /mnt 存在且空间大于主根目录，则设置 TARGET_DIR 为 /mnt
           if [ "$MNT_AVAIL" -gt "$ROOT_AVAIL" ]; then
             echo "TARGET_DIR=/mnt" >> $GITHUB_ENV
             echo "自适应检测结果：使用 /mnt 作为主缓存与交换区。"
@@ -131,34 +167,26 @@ jobs:
           fi
 
       # ==========================================
-      # 5. 【自适应】开启 32GB Swap 虚拟内存（保障 47GB 总虚拟内存）
+      # 5. 【自适应】开启 32GB Swap 虚拟内存
       # ==========================================
       - name: Create 32GB Swap Space
         if: steps.check_update.outputs.has_update == 'true'
         run: |
-          echo "=== 开启 Swap 前内存状态 ==="
-          free -h
-          
-          # 根据自适应检测结果，确立 Swap 写入路径（防止挤爆分立盘机型的主根目录）
           if [ "${{ env.TARGET_DIR }}" = "/mnt" ]; then
             SWAP_PATH="/mnt/swapfile"
           else
             SWAP_PATH="/swapfile"
           fi
           
-          echo "Selected Swap path: $SWAP_PATH"
-          
           sudo swapoff -a || true
           sudo fallocate -l 32G $SWAP_PATH
           sudo chmod 600 $SWAP_PATH
           sudo mkswap $SWAP_PATH
           sudo swapon $SWAP_PATH
-          
-          echo "=== 开启 Swap 后内存状态 ==="
           free -h
 
       # ==========================================
-      # 6. 基础环境准备（仅在需要更新时执行）
+      # 6. 基础环境准备
       # ==========================================
       - name: Set up JDK 17
         if: steps.check_update.outputs.has_update == 'true'
@@ -168,52 +196,43 @@ jobs:
           distribution: 'temurin'
 
       # ==========================================
-      # 7. 【自适应】建立并关联工作空间软链接
+      # 7. 下载 APK
       # ==========================================
       - name: Download APK from Latest Link
         if: steps.check_update.outputs.has_update == 'true'
         run: |
-          # 依据最优盘检测结果，确立物理工作目录
           if [ "${{ env.TARGET_DIR }}" = "/mnt" ]; then
             REAL_WORKSPACE="/mnt/workspace"
-            echo "Relocating workspace to /mnt/workspace"
             sudo mkdir -p $REAL_WORKSPACE
             sudo chown -R runner:runner $REAL_WORKSPACE
           else
             REAL_WORKSPACE="$GITHUB_WORKSPACE/workspace_real"
-            echo "Using standard workspace path"
             mkdir -p $REAL_WORKSPACE
           fi
           
-          # 建立软链接，使后续步骤 cd workspace 均可无缝重定向
           rm -rf workspace || true
           ln -sf $REAL_WORKSPACE workspace
           
           cd workspace
           echo "Downloading APK from: ${{ steps.check_update.outputs.apk_url }}"
           curl -L "${{ steps.check_update.outputs.apk_url }}" -o target.apk
-          echo "Download finished. File info:"
           du -sh target.apk
 
       # ==========================================
-      # 8. 安装 JADX 工具（仅在需要更新时执行）
+      # 8. 安装 JADX 工具
       # ==========================================
       - name: Install JADX
         if: steps.check_update.outputs.has_update == 'true'
         run: |
           mkdir -p bin
-          
           JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
           curl -L "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o jadx.zip
           unzip -d bin/jadx jadx.zip
-          
-          # 递归赋予 JADX 目录下所有的脚本可执行权限
           chmod -R +x bin/jadx/bin
-          
           echo "$GITHUB_WORKSPACE/bin/jadx/bin" >> $GITHUB_PATH
 
       # ==========================================
-      # 9. 双线程 + 30G JVM + 忽略调试信息全局反编译（仅在需要更新时执行）
+      # 9. 执行反编译
       # ==========================================
       - name: Decompile APK
         if: steps.check_update.outputs.has_update == 'true'
@@ -221,14 +240,10 @@ jobs:
           cd workspace
           mkdir -p java_final
           
-          # 9.1 仅仅提取所有的 classes*.dex 文件到临时目录，彻底跳过 assets
           echo "Only extracting classes*.dex files from target.apk..."
           unzip -q target.apk "classes*.dex" -d dex_extracted
           
-          # 9.2 检查并组装过滤参数（修改后：定时任务将默认进行全量反编译）
           FILTER=""
-          # 只有在手动触发（workflow_dispatch）且您勾选了【非完整反编译】时，才启用过滤器。
-          # 每天的自动构建（schedule）由于不满足此条件，将不会设置 FILTER，从而默认执行全量反编译。
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.decompile_all }}" = "false" ]; then
             if [ "${{ inputs.decompile_mobileqq }}" = "true" ] && [ "${{ inputs.decompile_qqnt }}" = "true" ]; then
               FILTER="com.tencent.mobileqq,com.tencent.qqnt"
@@ -241,55 +256,47 @@ jobs:
             fi
           fi
           
-          # 【优化】结合 32G Swap，允许 JVM 使用高达 30GB 的堆内存，避免在最后关头陷入疯狂 Full GC 循环
           export JAVA_OPTS="-Xmx30g"
-          echo "JVM memory limit set to 30G"
           
-          # 9.3 运行全局反编译（已整合退出码 3 的忽略机制）
           set +e
           if [ -n "$FILTER" ]; then
-            echo "局部反编译模式: 载入完整 DEX 上下文，但仅输出: $FILTER"
+            echo "局部反编译模式: $FILTER"
             jadx -d java_final --no-res --threads-count 1 --no-debug-info --show-only "$FILTER" dex_extracted/*.dex
           else
-            echo "完整反编译模式: 正在反编译整个 APK..."
-            # 全量反编译时，开启 2 线程加快速度，但内存占用较高
+            echo "完整反编译模式..."
             jadx -d java_final --no-res --threads-count 2 dex_extracted/*.dex
           fi
           
           EXIT_CODE=$?
           set -e
           
-          # 判断退出状态码：0 和 3 均视为允许的状态并继续执行
           if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 3 ]; then
-            echo "JADX 运行结束，状态码为 $EXIT_CODE"
+            echo "JADX 运行结束，状态码: $EXIT_CODE"
           else
-            echo "JADX 发生致命错误，错误码为 $EXIT_CODE"
+            echo "JADX 运行失败，退出码: $EXIT_CODE"
             exit $EXIT_CODE
           fi
           
-          # 9.4 反编译结束，立即清理掉占空间的临时 dex_extracted 目录
           rm -rf dex_extracted
 
       # ==========================================
-      # 10. 打包反编译产物 (仅打包 Java 源码，且仅在需要更新时执行)
+      # 10. 打包源码产物
       # ==========================================
       - name: Zip Decompiled Files
         if: steps.check_update.outputs.has_update == 'true'
         run: |
           cd workspace
           if [ -d "java_final" ] && [ "$(ls -A java_final)" ]; then
-            echo "Zipping Java output..."
             mv java_final decompiled_java
             zip -r java_output.zip decompiled_java
           else
-            echo "No files decompiled. Creating a fallback readme file."
             mkdir -p decompiled_java
             echo "No package selection was made or no code was found." > decompiled_java/readme.txt
             zip -r java_output.zip decompiled_java
           fi
 
       # ==========================================
-      # 11. 上传工作流 Artifact 备份（仅在需要更新时执行）
+      # 11. 上传 Artifact 备份
       # ==========================================
       - name: Upload Decoupled Artifacts
         if: steps.check_update.outputs.has_update == 'true'
@@ -300,7 +307,7 @@ jobs:
           retention-days: 7
 
       # ==========================================
-      # 12. 自动创建 GitHub Release 并附带简短简介（仅在需要更新时执行）
+      # 12. 创建 GitHub Release（适配 Beta 提醒与预发布状态）
       # ==========================================
       - name: Create GitHub Release
         if: steps.check_update.outputs.has_update == 'true'
@@ -310,16 +317,29 @@ jobs:
           VERSION_SHORT="${{ steps.check_update.outputs.version_short }}"
           VERSION_FULL="${{ steps.check_update.outputs.version_full }}"
           APK_URL="${{ steps.check_update.outputs.apk_url }}"
+          IS_BETA="${{ steps.check_update.outputs.is_beta }}"
           
-          echo "=== 正在创建 GitHub Release v${VERSION_SHORT} ==="
+          RELEASE_TITLE="QQ Android v${VERSION_SHORT}"
+          EXTRA_FLAGS=""
+          BETA_NOTE=""
+
+          # 如果检测到是 Beta 版，拼接标题、提示词和 github CLI 标记
+          if [ "$IS_BETA" = "true" ]; then
+            RELEASE_TITLE="QQ Android v${VERSION_SHORT} [Beta]"
+            EXTRA_FLAGS="--prerelease"
+            BETA_NOTE="> ⚠️ **注意：当前版本为 Telegram 频道标记的 #Beta 测试版本，请谨慎评估使用。**\n\n"
+          fi
+
+          echo "=== 正在创建 GitHub Release: ${RELEASE_TITLE} ==="
           
-          # 移除末尾非法的 --clobber 参数；如果 Tag 已存在则自动降级使用 upload --clobber 覆盖文件
           gh release create "v${VERSION_SHORT}" workspace/java_output.zip \
-            --title "QQ Android v${VERSION_SHORT}" \
-            --notes "### QQ Android 自动反编译产物说明
+            --title "${RELEASE_TITLE}" \
+            ${EXTRA_FLAGS} \
+            --notes "$(echo -e "${BETA_NOTE}### QQ Android 自动反编译产物说明
 
           - **应用版本：** \`${VERSION_SHORT}\`
-          - **哈希包名：** \`${VERSION_FULL}.apk\`
+          - **安装包文件名：** \`${VERSION_FULL}.apk\`
+          - **测试版状态：** \`${IS_BETA}\`
           - **官方下载直链：** [点击从腾讯官方下载](${APK_URL})
-          - **自动生成时间：** $(date -u -d '+8 hours' '+%Y-%m-%d %H:%M:%S') (北京时间)" || \
+          - **自动生成时间：** $(date -u -d '+8 hours' '+%Y-%m-%d %H:%M:%S') (北京时间)")" || \
           gh release upload "v${VERSION_SHORT}" workspace/java_output.zip --clobber
