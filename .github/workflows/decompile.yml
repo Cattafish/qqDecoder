@@ -327,7 +327,7 @@ jobs:
           if [ "$IS_BETA" = "true" ]; then
             RELEASE_TITLE="QQ Android v${VERSION_SHORT} [Beta]"
             EXTRA_FLAGS="--prerelease"
-            BETA_NOTE="> ⚠️ **注意：当前版本为 Telegram 频道标记的 #Beta 测试版本，请谨慎评估使用。**\n\n"
+            BETA_NOTE="> **当前版本被 Telegram 频道标记的 #Beta 测试版本**\n\n"
           fi
 
           echo "=== 正在创建 GitHub Release: ${RELEASE_TITLE} ==="
