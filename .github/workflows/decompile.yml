@@ -42,7 +42,6 @@ jobs:
         run: |
           echo "=== 正在从 Telegram 获取最新 QQ APK 及版本信息 ==="
           
-          # 使用 Python 脚本精准抓取 TG 最新消息块，解析链接、版本号及 Beta 标记
           python3 - << 'EOF'
           import urllib.request
           import re
@@ -78,7 +77,7 @@ jobs:
           # 1. 检测是否包含 #beta 或 #Beta
           is_beta = "true" if re.search(r'#beta', latest_msg_text, re.IGNORECASE) else "false"
 
-          # 2. 提取版本号（优先提取形如 QQ_NT 9.3.30.39270 或数字版本号，若无则使用哈希文件名）
+          # 2. 提取版本号
           ver_match = re.search(r'QQ(?:_NT)?\s+([0-9.]+)', latest_msg_text, re.IGNORECASE)
           if not ver_match:
               ver_match = re.search(r'\b([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)\b', latest_msg_text)
@@ -88,23 +87,42 @@ jobs:
           if ver_match:
               version_short = ver_match.group(1)
           else:
-              # 降级方案：从文件名获取
               version_short = filename.split('_')[0]
 
-          # 写入 Github Output 供后续 Step 读取
+          # 3. 读取本地记录的上一次版本链接
+          old_url = ""
+          if os.path.exists("latest_version.txt"):
+              with open("latest_version.txt", "r", encoding="utf-8") as f:
+                  old_url = f.read().strip()
+
+          print(f"旧版本链接: {old_url}")
+          print(f"新版本链接: {latest_apk_url}")
+
+          # 4. 判断是否有更新或为手动触发 (workflow_dispatch)
+          event_name = os.environ.get('GITHUB_EVENT_NAME', '')
+          has_update = (latest_apk_url != old_url) or (event_name == 'workflow_dispatch')
+
+          if has_update:
+              print("检测到新版本或手动触发，更新 latest_version.txt ...")
+              with open("latest_version.txt", "w", encoding="utf-8") as f:
+                  f.write(latest_apk_url)
+
+          # 5. 写入 Github Output 供后续 Step 读取
           github_output = os.environ.get('GITHUB_OUTPUT')
           with open(github_output, 'a', encoding='utf-8') as f:
               f.write(f"apk_url={latest_apk_url}\n")
               f.write(f"version_short={version_short}\n")
               f.write(f"version_full={filename}\n")
               f.write(f"is_beta={is_beta}\n")
+              f.write(f"has_update={'true' if has_update else 'false'}\n")
 
           print(f"检测成功!")
           print(f"下载直链: {latest_apk_url}")
           print(f"版本号: {version_short}")
           print(f"是否为 Beta 版: {is_beta}")
+          print(f"是否有更新触发: {has_update}")
           EOF
-
+          
           LATEST_URL="${{ steps.check_update.outputs.apk_url }}"
           
           # 读取本地记录的上一次版本链接
