@@ -122,24 +122,6 @@ jobs:
           print(f"是否为 Beta 版: {is_beta}")
           print(f"是否有更新触发: {has_update}")
           EOF
-          
-          LATEST_URL="${{ steps.check_update.outputs.apk_url }}"
-          
-          # 读取本地记录的上一次版本链接
-          OLD_URL=""
-          if [ -f "latest_version.txt" ]; then
-            OLD_URL=$(cat latest_version.txt)
-          fi
-          echo "Old URL recorded: $OLD_URL"
-
-          # 比较版本是否有变化或为手动触发
-          if [ "$LATEST_URL" != "$OLD_URL" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "has_update=true" >> $GITHUB_OUTPUT
-            echo "$LATEST_URL" > latest_version.txt
-          else
-            echo "has_update=false" >> $GITHUB_OUTPUT
-            echo "No update detected."
-          fi
 
       # ==========================================
       # 3. 如果有更新，将最新版本记录推送回仓库
